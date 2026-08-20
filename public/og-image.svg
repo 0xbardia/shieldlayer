@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="ShieldLayer — Protection, On-Chain">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="55%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#1E40AF"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <g stroke="#3B82F6" stroke-opacity="0.18" fill="none">
+    <path d="M0 160h1200M0 240h1200M0 320h1200M0 400h1200M0 480h1200"/>
+    <path d="M80 0v630M200 0v630M320 0v630M1040 0v630M1160 0v630"/>
+  </g>
+  <g transform="translate(80,150) scale(0.55)">
+    <path fill="#3B82F6" d="M256 36L84 98v148c0 118 78 214 172 250 94-36 172-132 172-250V98L256 36z"/>
+    <path fill="#60A5FA" d="M256 36l172 62v148c0 118-78 214-172 250V36z"/>
+    <path fill="none" stroke="#93C5FD" stroke-width="22" stroke-linecap="round" d="M156 188h200"/>
+    <path fill="none" stroke="#E2E8F0" stroke-width="18" stroke-linecap="round" d="M168 238h176"/>
+    <path fill="none" stroke="#93C5FD" stroke-width="16" stroke-linecap="round" d="M186 286h140"/>
+    <path fill="none" stroke="#34D399" stroke-width="28" stroke-linecap="round" stroke-linejoin="round" d="M198 332l46 42 76-88"/>
+  </g>
+  <g fill="#F8FAFC" transform="translate(390,205) scale(0.72)">
+    <path d="M78 18c-28-10-62-6-78 18 18-6 40-8 56 2 10 6 10 16-4 22-26 10-64 10-74 42 16 28 58 36 90 22-16 6-40 6-54-6-8-8-6-16 8-22 28-12 70-10 80-46C110 28 96 22 78 18z"/>
+    <path d="M128 8h28v42h40V8h28v112h-28V72h-40v48h-28z"/>
+    <path d="M236 8h28v112h-28z"/>
+    <path d="M276 8h78v24h-50v20h44v24h-44v20h54v24h-82z"/>
+    <path d="M368 8h28v88h52v24h-80z"/>
+    <path d="M460 8h48c36 0 62 22 62 56s-26 56-62 56h-48zm28 24v64h18c18 0 32-12 32-32s-14-32-32-32z"/>
+    <path d="M592 8h28v88h52v24h-80z"/>
+    <path d="M684 120l22-32h40l22 32h-30l-8-12h-28l-8 12zm36-84l36 52h-72z"/>
+    <path d="M788 8l32 48 32-48h30l-48 68v44h-28V76L758 8z"/>
+    <path d="M888 8h78v24h-50v20h44v24h-44v20h54v24h-82z"/>
+    <path d="M980 8h52c28 0 48 16 48 40 0 18-10 32-28 38l36 34h-32l-32-32h-16v32h-28zm28 24v32h22c12 0 20-6 20-16s-8-16-20-16z"/>
+  </g>
+  <g fill="#93C5FD" transform="translate(390,380) scale(0.38)">
+    <path d="M8 8h28v88h52v24H8z"/>
+    <path d="M108 8h78v24h-50v20h44v24h-44v20h54v24h-82z"/>
+    <path d="M200 8h52c28 0 48 16 48 40 0 18-10 32-28 38l36 34h-32l-32-32h-16v32h-28zm28 24v32h22c12 0 20-6 20-16s-8-16-20-16z"/>
+    <path d="M324 8h78v24h-50v20h44v24h-44v20h54v24h-82z"/>
+    <path d="M416 8h28v88h52v24h-80z"/>
+    <path d="M508 8h28v112h-28z"/>
+    <path d="M548 8h78v24h-50v20h44v24h-44v20h54v24h-82z"/>
+    <path d="M644 8h28v42h40V8h28v112h-28V72h-40v48h-28z"/>
+    <rect x="752" y="96" width="28" height="28" rx="4"/>
+    <path d="M804 120 L848 8h32L836 120h-32z"/>
+    <path d="M900 8h28v112h-28z"/>
+    <path d="M952 8h48c36 0 62 22 62 56s-26 56-62 56h-48zm28 24v64h18c18 0 32-12 32-32s-14-32-32-32z"/>
+    <path d="M1092 8h28v42h40V8h28v112h-28V72h-40v48h-28z"/>
+    <path d="M1204 8h48c36 0 62 22 62 56s-26 56-62 56h-48zm28 24v64h18c18 0 32-12 32-32s-14-32-32-32z"/>
+    <path d="M1336 8h28v112h-28z"/>
+    <path d="M1376 8h52c28 0 48 16 48 40 0 18-10 32-28 38l36 34h-32l-32-32h-16v32h-28zm28 24v32h22c12 0 20-6 20-16s-8-16-20-16z"/>
+  </g>
+</svg>

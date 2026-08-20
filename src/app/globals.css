@@ -1,0 +1,289 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Vazirmatn:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design Tokens ── */
+:root {
+  --color-brand: #8B5CF6;
+  --color-brand-dark: #7C3AED;
+  --color-accent: #06B6D4;
+  --color-success: #10B981;
+  --color-warning: #F59E0B;
+  --color-error: #EF4444;
+  --color-focus: #8B5CF6;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  --font-display: "Satoshi", "Inter", "Vazirmatn", system-ui, sans-serif;
+  --font-body: "Inter", "Vazirmatn", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+/* ── Base ── */
+html {
+  scroll-behavior: smooth;
+  overflow-x: clip;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+  font-family: var(--font-body);
+  overflow-x: clip;
+}
+
+[dir="rtl"] body {
+  font-family: "Vazirmatn", var(--font-body);
+}
+
+/* ── Focus Ring ── */
+:focus {
+  @apply outline-none;
+}
+
+:focus-visible {
+  @apply outline-2 outline-offset-2;
+  outline-color: var(--color-focus);
+  border-radius: 0.375rem;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  @apply outline-2 outline-offset-2;
+  outline-color: var(--color-focus);
+}
+
+/* ── Selection ── */
+::selection {
+  background-color: rgba(139, 92, 246, 0.2);
+  color: inherit;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  @apply bg-slate-600;
+}
+
+/* ── Shimmer Skeleton ── */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(139, 92, 246, 0.04) 0%,
+    rgba(139, 92, 246, 0.08) 50%,
+    rgba(139, 92, 246, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Card System — varied treatments ── */
+
+/* Default card — clean, minimal border */
+.card {
+  @apply rounded-2xl border border-slate-200 bg-white p-6;
+  @apply dark:border-slate-800 dark:bg-slate-900;
+}
+
+/* Elevated card — stronger shadow, no visible border */
+.card-elevated {
+  @apply rounded-2xl bg-white p-6;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 6px 24px rgba(0,0,0,0.06);
+}
+.dark .card-elevated {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 6px 24px rgba(0,0,0,0.3);
+}
+
+/* Inset card — dark surface, feels like a display area */
+.card-inset {
+  @apply rounded-2xl bg-slate-100 p-6;
+  @apply dark:bg-slate-800/60;
+}
+
+/* Flat card — no shadow, subtle background, borderless */
+.card-flat {
+  @apply rounded-2xl bg-white p-6;
+  @apply dark:bg-slate-900;
+}
+
+/* Highlight card — left accent border */
+.card-highlight {
+  @apply rounded-2xl border-l-4 border border-slate-200 bg-white p-6 border-l-brand;
+  @apply dark:border-slate-800 dark:bg-slate-900 dark:border-l-brand;
+}
+
+/* Card hover — only on interactive cards */
+.card-hover {
+  @apply transition-transform transition-shadow transition-colors duration-300;
+}
+
+.card-hover:hover {
+  @apply shadow-card-hover -translate-y-0.5;
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+/* ── Section Rhythm ── */
+
+/* Standard section — default spacing */
+.section {
+  @apply mx-auto max-w-6xl px-4 py-16 sm:py-20;
+}
+
+/* Compact section — tighter spacing for data-heavy areas */
+.section-compact {
+  @apply mx-auto max-w-6xl px-4 py-10 sm:py-12;
+}
+
+/* Wide section — full-bleed feel */
+.section-wide {
+  @apply px-4 py-16 sm:py-20;
+}
+
+/* Constrained section — narrower for text-heavy areas */
+.section-narrow {
+  @apply mx-auto max-w-3xl px-4 py-16 sm:py-20;
+}
+
+/* ── Typography — MORE VARIETY ── */
+
+/* Display heading — hero-level */
+.heading-display {
+  font-family: var(--font-display);
+  @apply text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+}
+
+/* Section heading */
+.heading-section {
+  font-family: var(--font-display);
+  @apply text-3xl font-bold tracking-tight sm:text-4xl;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+/* Subsection heading */
+.heading-subsection {
+  font-family: var(--font-display);
+  @apply text-xl font-bold tracking-tight sm:text-2xl;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+
+/* Label — small uppercase or semibold label */
+.label {
+  @apply text-xs font-semibold uppercase tracking-wider;
+  letter-spacing: 0.05em;
+}
+
+/* Prose — body text with comfortable reading */
+.prose {
+  @apply text-base leading-relaxed text-slate-600 dark:text-slate-400;
+}
+
+/* ── Micro-interactions ── */
+
+/* Button press effect */
+.btn-press {
+  @apply transition-all duration-150;
+}
+
+.btn-press:active {
+  @apply scale-95;
+}
+
+/* Card reveal animation */
+.card-reveal {
+  @apply transition-all duration-500 ease-out;
+  transform: translateY(0);
+}
+
+/* Subtle glow on hover */
+.glow-hover:hover {
+  box-shadow: 0 0 20px rgba(139, 92, 246, 0.1);
+}
+
+/* ── Link Underline Animation ── */
+.link-underline {
+  @apply relative;
+}
+
+.link-underline::after {
+  content: "";
+  @apply absolute bottom-0 left-0 w-0 h-0.5 bg-brand transition-all duration-300;
+}
+
+.link-underline:hover::after {
+  @apply w-full;
+}
+
+/* ── Loading pulse ── */
+.loading-pulse {
+  @apply animate-pulse rounded-xl bg-slate-200 dark:bg-slate-800;
+}
+
+/* ── Reduced Motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Dark mode overrides ── */
+.dark body {
+  @apply bg-dark text-slate-50;
+}
+
+.dark ::selection {
+  background-color: rgba(139, 92, 246, 0.3);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  @apply bg-slate-600;
+}
+
+.dark .shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(139, 92, 246, 0.06) 0%,
+    rgba(139, 92, 246, 0.12) 50%,
+    rgba(139, 92, 246, 0.06) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}

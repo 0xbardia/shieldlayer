@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ShieldLayer icon on light">
+  <path fill="#1E40AF" d="M256 36L84 98v148c0 118 78 214 172 250 94-36 172-132 172-250V98L256 36z"/>
+  <path fill="#1E3A8A" d="M256 36l172 62v148c0 118-78 214-172 250V36z"/>
+  <path fill="none" stroke="#3B82F6" stroke-width="22" stroke-linecap="round" d="M156 188h200"/>
+  <path fill="none" stroke="#64748B" stroke-width="18" stroke-linecap="round" d="M168 238h176"/>
+  <path fill="none" stroke="#3B82F6" stroke-width="16" stroke-linecap="round" d="M186 286h140"/>
+  <path fill="none" stroke="#059669" stroke-width="28" stroke-linecap="round" stroke-linejoin="round" d="M198 332l46 42 76-88"/>
+</svg>
