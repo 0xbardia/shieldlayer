@@ -266,7 +266,7 @@ function NewPolicyForm() {
                   className="mt-2 w-full accent-brand"
                   value={Math.min(coverage, Math.max(maxCoverageGen, 0))}
                   onChange={(e) => onCoverageChange(Number(e.target.value))}
-                  disabled={poolBalanceWei == null || poolTooSmall}
+                  disabled={poolTooSmall}
                 />
                 <input
                   id="coverage-num"
@@ -277,13 +277,13 @@ function NewPolicyForm() {
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800"
                   value={coverage}
                   onChange={(e) => onCoverageChange(Number(e.target.value))}
-                  disabled={poolBalanceWei == null || poolTooSmall}
+                  disabled={poolTooSmall}
                 />
                 <p className="mt-2 text-xs text-slate-500">
                   Max coverage is 1% of pool balance
                   {poolBalanceWei != null
-                    ? ` (${formatUnits(weiToGen(poolBalanceWei))} GEN pool → ${formatUnits(maxCoverageGen)} GEN cap)`
-                    : " (loading from contract…)"}
+                    ? ` (pool ${formatUnits(weiToGen(poolBalanceWei))} GEN → ${formatUnits(maxCoverageGen)} GEN cap)`
+                    : " (estimating cap…)"}
                   . Required premium:{" "}
                   <span className="font-semibold text-brand">
                     {formatUnits(requiredPremium)} GEN

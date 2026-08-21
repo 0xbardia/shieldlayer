@@ -200,11 +200,35 @@ export function FileClaimButton({
             File claim on policy #{policy.policy_id}
           </h2>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            Event data (read-only from purchase):
+            Event data (read-only from purchase)
           </p>
-          <pre className="mt-2 max-h-40 overflow-auto rounded-xl bg-slate-100 p-3 text-xs dark:bg-slate-800">
-            {policy.event_data}
-          </pre>
+          <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/50">
+            {(() => {
+              try {
+                const j = JSON.parse(policy.event_data);
+                const rows: [string, string][] = [];
+                if (j.flight) rows.push(["Flight", String(j.flight)]);
+                if (j.date) rows.push(["Date", String(j.date)]);
+                if (j.hours != null) rows.push(["Threshold", `${j.hours}h`]);
+                if (j.location) rows.push(["Location", String(j.location)]);
+                if (j.wind_kmh != null) rows.push(["Wind", `${j.wind_kmh} km/h`]);
+                if (j.company) rows.push(["Company", String(j.company)]);
+                if (rows.length === 0) rows.push(["Raw", policy.event_data]);
+                return (
+                  <dl className="space-y-1.5">
+                    {rows.map(([k, v]) => (
+                      <div key={k} className="flex items-center justify-between gap-4 text-sm">
+                        <dt className="text-slate-500 dark:text-slate-400">{k}</dt>
+                        <dd className="font-mono font-medium text-slate-900 dark:text-white">{v}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                );
+              } catch {
+                return <span className="font-mono text-xs text-slate-600 dark:text-slate-300">{policy.event_data}</span>;
+              }
+            })()}
+          </div>
           {stage ? (
             <p role="status" className="mt-3 text-sm font-medium text-brand">
               {STAGE_LABEL[stage]}

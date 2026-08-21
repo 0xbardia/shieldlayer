@@ -35,8 +35,28 @@ export type GenLayerLike = {
   }) => Promise<unknown>;
 };
 
+// EIP-6963 discovery (never assign to window.ethereum)
+const eip6963Providers: EthereumProvider[] = [];
+let eip6963Bound = false;
+function ensureEip6963() {
+  if (typeof window === "undefined" || eip6963Bound) return;
+  eip6963Bound = true;
+  window.addEventListener("eip6963:announceProvider" as unknown as string, ((ev: CustomEvent<{ provider: EthereumProvider }>) => {
+    const p = ev.detail?.provider;
+    if (p && !eip6963Providers.includes(p)) eip6963Providers.push(p);
+  }) as EventListener);
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+}
+
 function injectedProvider(): EthereumProvider | undefined {
   if (typeof window === "undefined") return undefined;
+  ensureEip6963();
+  // Prefer EIP-6963 MetaMask if present
+  if (eip6963Providers.length) {
+    const mm = eip6963Providers.find((p) => (p as unknown as { isMetaMask?: boolean }).isMetaMask);
+    if (mm) return mm;
+    return eip6963Providers[0];
+  }
   const w = window as unknown as {
     ethereum?: EthereumProvider & {
       providers?: EthereumProvider[];

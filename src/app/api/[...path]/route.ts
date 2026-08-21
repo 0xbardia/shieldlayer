@@ -16,9 +16,21 @@ async function proxy(req: NextRequest, path: string[]) {
   }
   try {
     const res = await fetch(url, init);
-    const text = await res.text();
+    let text = await res.text();
+    let status = res.status;
+    // Rewrite upstream 503 on read endpoints to 200 fail-open (never surface 503 to the user).
+    if (status === 503) {
+      const p = path.join("/");
+      try { JSON.parse(text); } catch { /* ignore */ }
+      if (p.includes("policies") && !p.includes("/")) { text = JSON.stringify({ policies: [], stale: true, reason: "rpc_unavailable" }); status = 200; }
+      else if ((p.includes("claims") && !p.includes("/")) || p.includes("policies")) { text = JSON.stringify({ claims: [], policies: [], stale: true, reason: "rpc_unavailable" }); status = 200; }
+      else if (p.includes("claims/") || p.includes("policies/")) { text = JSON.stringify({ error: "not_found", stale: true, reason: "rpc_unavailable" }); status = 200; }
+      else if (p.includes("stats")) { text = JSON.stringify({ total_policies: 0, total_claims: 0, premium_pool: 0, approved_claims: 0, rejected_claims: 0, stale: true, reason: "rpc_unavailable" }); status = 200; }
+      else if (p === "read") { try { const prev = JSON.parse(text); text = JSON.stringify({ result: prev.result ?? [], stale: true, reason: "rpc_unavailable" }); } catch { text = JSON.stringify({ result: [], stale: true, reason: "rpc_unavailable" }); } status = 200; }
+      else { text = JSON.stringify({ stale: true, reason: "rpc_unavailable" }); status = 200; }
+    }
     return new NextResponse(text, {
-      status: res.status,
+      status,
       headers: {
         "content-type": res.headers.get("content-type") || "application/json",
         "x-ratelimit-limit": res.headers.get("x-ratelimit-limit") || "100",
@@ -27,10 +39,20 @@ async function proxy(req: NextRequest, path: string[]) {
       },
     });
   } catch {
-    return NextResponse.json(
-      { error: "rpc_unavailable: upstream API not reachable" },
-      { status: 503 },
-    );
+    // Fail-open: upstream unreachable. Return empty data so the page shows
+    // "live data unavailable" instead of a red error. Never 503 on reads.
+    const p = path.join("/");
+    if (p.includes("policies")) return NextResponse.json({ policies: [], stale: true, reason: "rpc_unavailable" }, { status: 200 });
+    if (p.includes("claims") && !p.includes("/")) {
+      // /api/claims?address=…  (list)
+      return NextResponse.json({ claims: [], stale: true, reason: "rpc_unavailable" }, { status: 200 });
+    }
+    if (p === "stats" || p.includes("stats")) {
+      return NextResponse.json({ total_policies: 0, total_claims: 0, premium_pool: 0, approved_claims: 0, rejected_claims: 0, stale: true, reason: "rpc_unavailable" }, { status: 200 });
+    }
+    if (p === "read") return NextResponse.json({ result: [], stale: true, reason: "rpc_unavailable" }, { status: 200 });
+    // Generic read fallback (claims/{id}, policies/{id}, claim?id=…)
+    return NextResponse.json({ error: "not_found", stale: true, reason: "rpc_unavailable" }, { status: 200 });
   }
 }
 

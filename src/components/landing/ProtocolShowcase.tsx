@@ -73,21 +73,21 @@ export function ProtocolShowcase() {
         </div>
       </AnimatedSection>
 
-      <div className="mt-10 grid gap-4 lg:grid-cols-3">
+      <div className="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <AnimatedSection delay={0.1}>
-          <div className="card-highlight row-span-2">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-50 text-brand dark:bg-brand-900/20">
-                <ShieldIcon className="h-6 w-6" />
+          <div className="card-flat flex flex-col">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 text-brand dark:bg-brand-900/20">
+                <ShieldIcon className="h-5 w-5" />
               </div>
               <div>
                 <p className="text-xs font-medium text-slate-400 dark:text-slate-500">Active Coverage</p>
-                <p className="text-3xl font-bold tabular-nums text-slate-900 dark:text-white">
+                <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">
                   {stats?.total_policies ?? 0}
                 </p>
               </div>
             </div>
-            <div className="space-y-3">
+            <div className="mt-4 flex-1 space-y-2 border-t border-slate-100 pt-4 dark:border-slate-800">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-slate-500">Pool Balance</span>
                 <span className="font-mono font-semibold">{formatUnits(stats?.premium_pool ?? 0)} GEN</span>
@@ -105,42 +105,42 @@ export function ProtocolShowcase() {
         </AnimatedSection>
 
         <AnimatedSection delay={0.2}>
-          <div className="card-flat">
+          <div className="card-flat flex flex-col justify-center">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">
                 <ZapIcon className="h-5 w-5" />
               </div>
               <div>
                 <p className="text-xs text-slate-400">Settlement</p>
-                <p className="text-xl font-bold">&lt; 2 min</p>
+                <p className="text-2xl font-bold tabular-nums">&lt; 2 min</p>
               </div>
             </div>
           </div>
         </AnimatedSection>
 
         <AnimatedSection delay={0.25}>
-          <div className="card-flat">
+          <div className="card-flat flex flex-col justify-center">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400">
                 <LockIcon className="h-5 w-5" />
               </div>
               <div>
                 <p className="text-xs text-slate-400">Security Model</p>
-                <p className="text-xl font-bold">0 keys</p>
+                <p className="text-2xl font-bold tabular-nums">0 keys</p>
               </div>
             </div>
           </div>
         </AnimatedSection>
 
         <AnimatedSection delay={0.3}>
-          <div className="card-flat">
+          <div className="card-flat flex flex-col justify-center">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-50 text-accent-600 dark:bg-accent-900/20 dark:text-accent-400">
                 <ClockIcon className="h-5 w-5" />
               </div>
               <div>
                 <p className="text-xs text-slate-400">Oracle Response</p>
-                <p className="text-xl font-bold">~30s</p>
+                <p className="text-2xl font-bold tabular-nums">~30s</p>
               </div>
             </div>
           </div>

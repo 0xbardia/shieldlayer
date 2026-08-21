@@ -4,6 +4,9 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ArrowRightIcon } from "@/components/ui/Icons";
 import { AnimatedSection } from "@/components/ui/AnimatedSection";
+import { useStats } from "@/hooks/useStats";
+import { formatUnits } from "@/lib/utils";
+import { Shimmer } from "@/components/ui/Shimmer";
 
 function ShieldIcon({ className }: { className?: string }) {
   return (
@@ -34,6 +37,8 @@ function StormIcon({ className }: { className?: string }) {
 }
 
 export function Hero() {
+  const { data: stats, isLoading } = useStats();
+
   return (
     <section className="relative overflow-hidden border-b border-slate-200 dark:border-slate-800">
       <div className="mx-auto max-w-6xl px-4 py-16 sm:py-24 lg:py-32">
@@ -102,9 +107,28 @@ export function Hero() {
                   </span>
                 </div>
                 <div className="space-y-4">
-                  <div className="h-14 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />
-                  <div className="h-14 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />
-                  <div className="h-14 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />
+                  {isLoading ? (
+                    <>
+                      <div className="h-14 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />
+                      <div className="h-14 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />
+                      <div className="h-14 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />
+                    </>
+                  ) : (
+                    <>
+                      <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
+                        <p className="text-xs text-slate-400">Total Policies</p>
+                        <p className="text-xl font-bold tabular-nums">{stats?.total_policies ?? 0}</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
+                        <p className="text-xs text-slate-400">Pool Balance</p>
+                        <p className="text-xl font-bold tabular-nums">{formatUnits(stats?.premium_pool ?? 0)} GEN</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
+                        <p className="text-xs text-slate-400">Claims Processed</p>
+                        <p className="text-xl font-bold tabular-nums">{stats?.total_claims ?? 0}</p>
+                      </div>
+                    </>
+                  )}
                 </div>
                 <div className="mt-4 border-t border-slate-100 dark:border-slate-800 pt-3">
                   <Link

@@ -8,11 +8,19 @@ function RefreshIcon({ className }: { className?: string }) {
   );
 }
 
+function formatAge(totalSec: number): string {
+  if (totalSec < 5) return "just now";
+  if (totalSec < 60) return `${totalSec}s ago`;
+  if (totalSec < 3600) return `${Math.floor(totalSec / 60)}m ago`;
+  if (totalSec < 86400) return `${Math.floor(totalSec / 3600)}h ago`;
+  return `${Math.floor(totalSec / 86400)}d ago`;
+}
+
 export function RefreshBar({ secondsAgo, onRefresh, isLoading }: { secondsAgo?: number | null; onRefresh?: () => void; isLoading?: boolean }) {
   return (
     <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm dark:border-slate-800 dark:bg-slate-900">
       <span className="text-slate-500 dark:text-slate-400">
-        {secondsAgo != null ? `Updated ${secondsAgo}s ago` : "Auto-refresh: 15s"}
+        {secondsAgo != null ? `Updated ${formatAge(secondsAgo)}` : "Auto-refresh: 15s"}
       </span>
       <button
         type="button"

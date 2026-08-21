@@ -1,5 +1,7 @@
 "use client";
 
+import { FundPoolButton } from "@/components/dashboard/FundPoolButton";
+
 import { useWallet } from "@/hooks/useWallet";
 import { usePolicies } from "@/hooks/usePolicies";
 import { useClaims } from "@/hooks/useClaims";
@@ -61,7 +63,8 @@ export default function DashboardPage() {
 
   const isLoading = stats.isLoading || policies.isLoading || claims.isLoading;
   const isStale = stats.isStale || policies.isStale || claims.isStale;
-  const updatedAt = policies.dataUpdatedAt ? timeAgo(Math.floor(policies.dataUpdatedAt / 1000)) : null;
+  const updatedAtMs = policies.dataUpdatedAt ?? stats.dataUpdatedAt ?? 0;
+  const updatedAtSec = updatedAtMs > 0 ? Math.floor(Date.now() / 1000 - updatedAtMs / 1000) : null;
   const doRefresh = () => { policies.refetch(); claims.refetch(); stats.refetch(); };
 
   return (
@@ -104,24 +107,24 @@ export default function DashboardPage() {
                 <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400">
                   <BanknoteIcon className="h-5 w-5" />
                 </div>
-                <div>
+                <div className="flex-1 min-w-0">
                   <p className="text-xs text-slate-400">Pool Balance</p>
                   <p className="text-2xl font-bold tabular-nums">{formatUnits(stats.data?.premium_pool ?? 0)} GEN</p>
                 </div>
+                <FundPoolButton />
               </div>
             </AnimatedSection>
           </>
         )}
       </div>
 
-      {/* Refresh Bar */}
       <div className="mt-4">
-        <RefreshBar secondsAgo={updatedAt ? Number(updatedAt) : null} onRefresh={doRefresh} isLoading={isLoading} />
+        <RefreshBar secondsAgo={updatedAtSec} onRefresh={doRefresh} isLoading={isLoading} />
       </div>
 
       {isStale && !isLoading && (
         <div className="mt-4">
-          <StaleBanner updatedAt={updatedAt} onRetry={doRefresh} />
+          <StaleBanner updatedAt={updatedAtMs ? timeAgo(Math.floor(updatedAtMs / 1000)) : null} onRetry={doRefresh} />
         </div>
       )}
 

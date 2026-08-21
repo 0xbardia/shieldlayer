@@ -124,7 +124,7 @@ def _rpc_once(function: str, args: list[Any]) -> Any:
         env=env,
         capture_output=True,
         text=True,
-        timeout=25,
+        timeout=12,
     )
     out = (proc.stdout or "").strip()
     if out:
@@ -144,6 +144,13 @@ def rpc_read(function: str, args: list[Any] | None = None) -> Any:
         raise PermissionError("ERR_FORBIDDEN")
 
     key = function + json.dumps(args or [])
+    
+    # Check cache first (30s TTL)
+    if key in _cache:
+        ts, val = _cache[key]
+        if time.time() - ts < _CACHE_TTL:
+            return val
+    
     last_exc: Exception | None = None
     for attempt in range(3):
         try:

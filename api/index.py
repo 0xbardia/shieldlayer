@@ -164,11 +164,12 @@ async def stats(request: Request) -> JSONResponse:
         return _ok(request, data)
     except PermissionError:
         return _err(request, "ERR_FORBIDDEN", 403)
-    except ConnectionError:
-        return _ok(request, {"error": "ERR_RPC_TIMEOUT", "reason": "rpc_unavailable"}, 503)
+    except ConnectionError as exc:
+        logger.warning("stats fail-open (rpc_unavailable): %s", exc)
+        return _ok(request, {"total_policies": 0, "total_claims": 0, "premium_pool": 0, "approved_claims": 0, "rejected_claims": 0, "stale": True, "reason": "rpc_unavailable"})
     except Exception:
-        logger.exception("stats")
-        return _ok(request, {"error": "ERR_INTERNAL", "reason": "internal"}, 500)
+        logger.exception("stats fail-open")
+        return _ok(request, {"total_policies": 0, "total_claims": 0, "premium_pool": 0, "approved_claims": 0, "rejected_claims": 0, "stale": True, "reason": "read_failed"})
 
 
 def _need_addr(address: str | None) -> str | None:
@@ -189,12 +190,12 @@ async def policies(request: Request, address: str | None = None) -> JSONResponse
         raw = rpc_read("get_policies", [address.lower()])
         policies = raw if isinstance(raw, list) else []
         return _ok(request, {"policies": policies})
-    except ConnectionError:
-        logger.warning("policies fail-open empty list")
-        return _ok(request, {"policies": [], "reason": "rpc_unavailable"})
+    except ConnectionError as exc:
+        logger.warning("policies fail-open empty list (rpc_unavailable): %s", exc)
+        return _ok(request, {"policies": [], "stale": True, "reason": "rpc_unavailable"})
     except Exception:
         logger.exception("policies fail-open")
-        return _ok(request, {"policies": [], "reason": "read_failed"})
+        return _ok(request, {"policies": [], "stale": True, "reason": "read_failed"})
 
 
 @app.get("/api/policies/{policy_id}")
@@ -209,11 +210,12 @@ async def policy_one(policy_id: str, request: Request) -> JSONResponse:
         if isinstance(data, dict) and data.get("error") == "not_found":
             return _err(request, "ERR_NOT_FOUND", 404)
         return _ok(request, data)
-    except ConnectionError:
-        return _err(request, "ERR_RPC_TIMEOUT", 503)
+    except ConnectionError as exc:
+        logger.warning("policy %s fail-open (rpc_unavailable): %s", pid, exc)
+        return _ok(request, {"error": "not_found", "stale": True, "reason": "rpc_unavailable"}, 200)
     except Exception:
-        logger.exception("policy")
-        return _err(request, "ERR_INTERNAL", 500)
+        logger.exception("policy fail-open")
+        return _ok(request, {"error": "not_found", "stale": True, "reason": "read_failed"}, 200)
 
 
 @app.get("/api/claim")
@@ -224,11 +226,12 @@ async def claim_status_query(request: Request, id: str | None = None) -> JSONRes
         return _err(request, "ERR_INVALID_ID", 400)
     try:
         return _ok(request, rpc_read("check_claim_status", [cid]))
-    except ConnectionError:
-        return _err(request, "ERR_RPC_TIMEOUT", 503)
+    except ConnectionError as exc:
+        logger.warning("claim-status %s fail-open (rpc_unavailable): %s", cid, exc)
+        return _ok(request, {"status": "unknown", "stale": True, "reason": "rpc_unavailable"}, 200)
     except Exception:
-        logger.exception("claim-status")
-        return _err(request, "ERR_INTERNAL", 500)
+        logger.exception("claim-status fail-open")
+        return _ok(request, {"status": "unknown", "stale": True, "reason": "read_failed"}, 200)
 
 
 @app.get("/api/claims")
@@ -241,12 +244,12 @@ async def claims(request: Request, address: str | None = None) -> JSONResponse:
         raw = rpc_read("get_claims_by_user", [address.lower()])
         claims = raw if isinstance(raw, list) else []
         return _ok(request, {"claims": claims})
-    except ConnectionError:
-        logger.warning("claims fail-open empty list")
-        return _ok(request, {"claims": [], "reason": "rpc_unavailable"})
+    except ConnectionError as exc:
+        logger.warning("claims fail-open empty list (rpc_unavailable): %s", exc)
+        return _ok(request, {"claims": [], "stale": True, "reason": "rpc_unavailable"})
     except Exception:
         logger.exception("claims fail-open")
-        return _ok(request, {"claims": [], "reason": "read_failed"})
+        return _ok(request, {"claims": [], "stale": True, "reason": "read_failed"})
 
 
 @app.get("/api/claims/{claim_id}")
@@ -261,11 +264,12 @@ async def claim_one(claim_id: str, request: Request) -> JSONResponse:
         if isinstance(data, dict) and data.get("error") == "not_found":
             return _err(request, "ERR_NOT_FOUND", 404)
         return _ok(request, data)
-    except ConnectionError:
-        return _err(request, "ERR_RPC_TIMEOUT", 503)
+    except ConnectionError as exc:
+        logger.warning("claim %s fail-open (rpc_unavailable): %s", cid, exc)
+        return _ok(request, {"error": "not_found", "stale": True, "reason": "rpc_unavailable"}, 200)
     except Exception:
-        logger.exception("claim")
-        return _err(request, "ERR_INTERNAL", 500)
+        logger.exception("claim fail-open")
+        return _ok(request, {"error": "not_found", "stale": True, "reason": "read_failed"}, 200)
 
 
 @app.post("/api/read")
@@ -292,11 +296,19 @@ async def generic_read(request: Request) -> JSONResponse:
         return _ok(request, {"result": result})
     except PermissionError:
         return _err(request, "ERR_FORBIDDEN", 403)
-    except ConnectionError:
-        return _err(request, "ERR_RPC_TIMEOUT", 503)
+    except ConnectionError as exc:
+        logger.warning("generic read %s fail-open (rpc_unavailable): %s", function, exc)
+        fallback = [] if function in {"get_policies", "get_claims_by_user"} else {}
+        if function == "get_stats":
+            fallback = {"total_policies": 0, "total_claims": 0, "premium_pool": 0, "approved_claims": 0, "rejected_claims": 0}
+        # Preserve shape: always return result + stale:true
+        return _ok(request, {"result": fallback, "stale": True, "reason": "rpc_unavailable"})
     except Exception:
-        logger.exception("read")
-        return _err(request, "ERR_INTERNAL", 500)
+        logger.exception("read fail-open")
+        fallback = [] if function in {"get_policies", "get_claims_by_user"} else {}
+        if function == "get_stats":
+            fallback = {"total_policies": 0, "total_claims": 0, "premium_pool": 0, "approved_claims": 0, "rejected_claims": 0}
+        return _ok(request, {"result": fallback, "stale": True, "reason": "read_failed"})
 
 
 @app.post("/api/tx")
