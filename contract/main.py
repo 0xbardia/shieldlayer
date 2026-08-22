@@ -8,9 +8,10 @@ parametric insurance for flight delays, storms, and corporate bankruptcy events.
 
 Architecture:
     - Policies are purchased on-chain with native token premiums
+    - A policy cannot be purchased on or after the covered event's UTC date
     - Claims trigger oracle consensus via GenLayer's ``run_nondet_unsafe``
-    - Oracle sources include public APIs (Flightradar24, Open-Meteo, Google News)
-    - LLM tiebreaker resolves ambiguous oracle responses with confidence scoring
+    - Two independent oracle sources must agree before any automatic payout
+    - Validators must match every payout-driving field, including confidence
     - Approved claims pay out directly from the premium pool
 
 Security Model:
@@ -25,6 +26,7 @@ from genlayer import *
 from datetime import datetime, timezone
 import json
 import re
+import typing
 
 
 POLICY_TYPES = ("flight_delay", "storm", "bankruptcy")
@@ -71,9 +73,12 @@ ALLOWED_COMPANIES = frozenset(
 
 ORACLE_PREFIX = {
     "flight_delay": "https://www.flightradar24.com/data/flights/",
+    "flight_json": "https://api.aviationstack.com/v1/flights",
     "storm_archive": "https://archive-api.open-meteo.com/v1/archive",
+    "storm_forecast": "https://historical-forecast-api.open-meteo.com/v1/forecast",
     "storm_geo": "https://geocoding-api.open-meteo.com/v1/search",
     "bankruptcy": "https://news.google.com/rss/search?q=",
+    "sec_edgar": "https://efts.sec.gov/LATEST/search-index?q=",
 }
 
 ZERO_HEX = "0x0000000000000000000000000000000000000000"
@@ -82,14 +87,19 @@ ORACLE_ERROR = {
     "status": "oracle_error",
     "occurred": False,
     "confidence": 0,
+    "sources_agreed": False,
 }
 
 MANUAL_REVIEW = {
     "status": "pending_manual_review",
     "occurred": False,
     "confidence": 0,
+    "sources_agreed": False,
     "reason": "no_valid_oracle_response",
 }
+
+PAYOUT_STATUS_AUTO = "dual_source_consensus"
+PAYOUT_FIELDS = ("status", "occurred", "confidence", "sources_agreed")
 
 ADMIN_ACTIONS = (
     "withdraw_excess",
@@ -116,18 +126,60 @@ def _err(msg: str):
 
 
 def _hex(value) -> str:
+    """Normalize any address-like value to lowercase 0x-prefixed 40-hex."""
     if value is None:
         return ZERO_HEX
-    if hasattr(value, "as_hex"):
-        return str(value.as_hex).lower()
-    text = str(value).strip().lower()
-    if not text.startswith("0x"):
-        text = "0x" + text
-    return text
+    raw = ""
+    try:
+        if hasattr(value, "as_hex"):
+            ah = value.as_hex
+            raw = ah() if callable(ah) else ah
+        else:
+            raw = value
+        text = str(raw).strip().lower()
+    except Exception:
+        return ZERO_HEX
+    if text.startswith("0x"):
+        text = text[2:]
+    cleaned = []
+    for ch in text:
+        if ch in "0123456789abcdef":
+            cleaned.append(ch)
+    text = "".join(cleaned)
+    if not text:
+        return ZERO_HEX
+    if len(text) < 40:
+        text = text.zfill(40)
+    elif len(text) > 40:
+        text = text[-40:]
+    return "0x" + text
+
+
+def _addr_hex(value) -> str:
+    """Parse a user-supplied address without throwing."""
+    if value is None:
+        return ZERO_HEX
+    try:
+        text = str(value).strip()
+    except Exception:
+        return ZERO_HEX
+    if not text or text.lower() in ("none", "null", "undefined"):
+        return ZERO_HEX
+    try:
+        if hasattr(value, "as_hex"):
+            return _hex(value)
+        if not text.lower().startswith("0x"):
+            text = "0x" + text
+        return _hex(Address(text))
+    except Exception:
+        return ZERO_HEX
 
 
 def _id_key(value) -> str:
-    return str(int(value))
+    try:
+        return str(int(value))
+    except Exception:
+        return "0"
 
 
 def _safe_int(raw, default=0) -> int:
@@ -137,7 +189,7 @@ def _safe_int(raw, default=0) -> int:
         return default
 
 
-def _json_safe(obj):
+def _json_safe(obj) -> typing.Any:
     if isinstance(obj, bool):
         return obj
     if isinstance(obj, int):
@@ -153,6 +205,26 @@ def _json_safe(obj):
         return [_json_safe(x) for x in obj]
     if obj is None:
         return None
+    return str(obj)[:280]
+
+
+def _view_safe(obj) -> typing.Any:
+    """Calldata-safe view payload: never return None (Studio encoding crash)."""
+    if obj is None:
+        return ""
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, int):
+        return int(obj)
+    if isinstance(obj, float):
+        return int(round(obj))
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            out[str(k)] = _view_safe(v)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [_view_safe(x) for x in obj]
     return str(obj)[:280]
 
 
@@ -176,6 +248,75 @@ def _now() -> int:
 def _event_start_ts(date_str: str) -> int:
     year, month, day = [int(part) for part in str(date_str).split("-")]
     return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+
+
+def _event_already_started(date_str: str, now_ts: int = None) -> bool:
+    """True once the covered event's UTC calendar day has begun.
+
+    Policies cannot be purchased at or after this instant.
+    """
+    start = _event_start_ts(date_str)
+    ts = _now() if now_ts is None else int(now_ts)
+    return ts >= start
+
+
+def _payout_values(result) -> dict:
+    """Canonical payout-driving fields shared by validators and settlement.
+
+    Auto-payout reads exactly these keys. Validators must agree on all of them,
+    including confidence, before any claim can be paid.
+    """
+    if not isinstance(result, dict) or not result:
+        result = dict(MANUAL_REVIEW)
+    status = str(result.get("status") or "pending_manual_review")
+    occurred = _as_bool(result.get("occurred"))
+    try:
+        confidence = int(round(float(result.get("confidence", 0) or 0)))
+    except Exception:
+        confidence = 0
+    if confidence < 0:
+        confidence = 0
+    if confidence > 100:
+        confidence = 100
+    sources_agreed = _as_bool(result.get("sources_agreed"))
+    if status in ("pending_manual_review", "oracle_error"):
+        occurred = False
+        confidence = 0
+        sources_agreed = False
+    return {
+        "status": status,
+        "occurred": bool(occurred),
+        "confidence": int(confidence),
+        "sources_agreed": bool(sources_agreed),
+    }
+
+
+def _canonicalize_verification(raw) -> dict:
+    """Freeze payout fields so settlement cannot mutate values after consensus."""
+    if not isinstance(raw, dict) or not raw:
+        raw = dict(MANUAL_REVIEW)
+    out = _json_safe(raw)
+    if not isinstance(out, dict):
+        out = dict(MANUAL_REVIEW)
+    out.update(_payout_values(raw))
+    return out
+
+
+def _validators_agree(leader_result, validator_result) -> bool:
+    """True iff both nodes agree on every payout-driving value."""
+    return _payout_values(leader_result) == _payout_values(validator_result)
+
+
+def _can_auto_payout(values: dict) -> bool:
+    """Settlement gate: independent sources agreed and consensus status is auto."""
+    if not isinstance(values, dict):
+        return False
+    return (
+        values.get("status") == PAYOUT_STATUS_AUTO
+        and values.get("sources_agreed") is True
+        and _as_bool(values.get("occurred"))
+        and _safe_int(values.get("confidence"), 0) >= CONFIDENCE_THRESHOLD
+    )
 
 
 def _response_to_text(raw) -> str:
@@ -229,6 +370,23 @@ def _prompt_json(prompt: str) -> dict:
         except Exception:
             return {}
     return {}
+
+
+def _map_get(store, key, default=None):
+    """Read a TreeMap value without relying on `in` or KeyError shape."""
+    try:
+        getter = getattr(store, "get", None)
+        if callable(getter):
+            return getter(key, default)
+    except Exception:
+        pass
+    try:
+        contains = getattr(store, "contains", None)
+        if callable(contains) and not contains(key):
+            return default
+        return store[key]
+    except Exception:
+        return default
 
 
 def parse_event_data(policy_type, event_data) -> dict:
@@ -334,27 +492,17 @@ def _geocode(location: str):
         return None
 
 
-def _eval_storm(params: dict) -> dict:
-    """Evaluate storm event using Open-Meteo Archive API.
+def _eval_storm_coords(params: dict, coords, api_prefix: str) -> dict:
+    """Evaluate storm wind at one independent weather endpoint.
 
-    Geocodes the location, fetches historical wind data, and compares
-    against the policy threshold.
-
-    Args:
-        params: Must contain 'location' (IATA code or ISO country) and
-            'date' (YYYY-MM-DD) and 'wind_kmh' (threshold).
-
-    Returns:
-        dict with 'occurred' (bool), 'confidence', 'observed_wind_kmh'.
-        Returns MANUAL_REVIEW if geocoding or API fails.
+    Single-source results never set sources_agreed; only _dual_source does.
     """
-    coords = _geocode(str(params.get("location", "")))
-    if not coords:
+    if not coords or not api_prefix:
         return dict(MANUAL_REVIEW)
     lat, lon = coords
     date = str(params["date"])
     url = (
-        ORACLE_PREFIX["storm_archive"]
+        api_prefix
         + "?latitude="
         + str(lat)
         + "&longitude="
@@ -381,10 +529,30 @@ def _eval_storm(params: dict) -> dict:
     return {
         "status": "structured_consensus",
         "occurred": occurred,
-        "confidence": 100 if occurred else 0,
+        "confidence": 100,
         "observed_wind_kmh": observed,
-        "sources_agreed": True,
+        "sources_agreed": False,
     }
+
+
+def _eval_storm(params: dict) -> dict:
+    """Evaluate storm event using Open-Meteo Archive API.
+
+    Geocodes the location, fetches historical wind data, and compares
+    against the policy threshold. This is one independent source only.
+
+    Args:
+        params: Must contain 'location' (IATA code or ISO country) and
+            'date' (YYYY-MM-DD) and 'wind_kmh' (threshold).
+
+    Returns:
+        dict with 'occurred' (bool), 'confidence', 'observed_wind_kmh'.
+        Returns MANUAL_REVIEW if geocoding or API fails.
+    """
+    coords = _geocode(str(params.get("location", "")))
+    if not coords:
+        return dict(MANUAL_REVIEW)
+    return _eval_storm_coords(params, coords, ORACLE_PREFIX["storm_archive"])
 
 
 def _eval_with_llm(policy_type: str, params: dict, source_text: str) -> dict:
@@ -436,30 +604,162 @@ def _eval_with_llm(policy_type: str, params: dict, source_text: str) -> dict:
         "occurred": _as_bool(data.get("occurred")),
         "confidence": confidence,
         "reason": str(data.get("reason", ""))[:280],
-        "sources_agreed": True,
+        "sources_agreed": False,
     }
 
 
-def fetch_evidence(policy) -> dict:
-    """Fetch and verify insurance event evidence from oracle sources.
-
-    Routes to the appropriate oracle based on policy type:
-    - storm: Open-Meteo Archive API (structured, no LLM needed)
-    - flight_delay: Flightradar24 web scraping + LLM verification
-    - bankruptcy: Google News RSS + LLM verification
+def _eval_flight_from_json(params: dict, data: dict) -> dict:
+    """Parse AviationStack JSON response to determine delay.
 
     Args:
-        policy: dict with 'policy_type' and 'event_data' keys.
+        params: Validated event parameters ('hours' threshold).
+        data: Parsed JSON from the AviationStack API.
 
     Returns:
-        dict with verification result including 'occurred', 'confidence',
-        and 'status'. Returns MANUAL_REVIEW on any oracle failure.
+        dict with 'occurred', 'confidence', 'delay_minutes'.
+        MANUAL_REVIEW when no usable flight record exists.
+    """
+    try:
+        if not isinstance(data, dict) or not data:
+            return dict(MANUAL_REVIEW)
+        if data.get("error") or data.get("success") is False:
+            return dict(MANUAL_REVIEW)
+        flights = data.get("data", [])
+        if not isinstance(flights, list) or not flights:
+            return dict(MANUAL_REVIEW)
+        flight = flights[0]
+        if not isinstance(flight, dict):
+            return dict(MANUAL_REVIEW)
+        departure = flight.get("departure", {})
+        if not isinstance(departure, dict):
+            departure = {}
+        delay = departure.get("delay", None)
+        if delay is None:
+            return dict(MANUAL_REVIEW)
+        delay_minutes = int(str(delay).strip() or 0)
+        threshold_hours = int(params.get("hours", 3))
+        occurred = delay_minutes >= threshold_hours * 60
+        return {
+            "status": "structured_consensus",
+            "occurred": occurred,
+            "confidence": 100,
+            "delay_minutes": max(0, delay_minutes),
+            "sources_agreed": False,
+        }
+    except Exception:
+        return dict(MANUAL_REVIEW)
+
+
+def _eval_bankruptcy_from_edgar(params: dict, data: dict) -> dict:
+    """Parse SEC EDGAR full-text search JSON for bankruptcy filings.
+
+    Args:
+        params: Validated event parameters ('company' ticker).
+        data: Parsed JSON from the SEC EDGAR search API.
+
+    Returns:
+        dict with 'occurred', 'confidence'. MANUAL_REVIEW on any failure.
+    """
+    try:
+        if not isinstance(data, dict) or not data:
+            return dict(MANUAL_REVIEW)
+        if data.get("error") or data.get("success") is False:
+            return dict(MANUAL_REVIEW)
+        hits = data.get("hits", {})
+        if not isinstance(hits, dict):
+            return dict(MANUAL_REVIEW)
+        total_obj = hits.get("total", {})
+        if isinstance(total_obj, dict):
+            total = int(total_obj.get("value", 0) or 0)
+        else:
+            total = _safe_int(total_obj, 0)
+        company = str(params.get("company", "")).upper()
+        matched = 0
+        for doc in hits.get("hits", []) or []:
+            source = doc.get("_source", {}) if isinstance(doc, dict) else {}
+            display = str(source.get("display_names", "") or "")
+            if company in display.upper():
+                matched += 1
+        if total <= 0:
+            return {
+                "status": "structured_consensus",
+                "occurred": False,
+                "confidence": 60,
+                "sources_agreed": False,
+            }
+        if matched > 0:
+            return {
+                "status": "structured_consensus",
+                "occurred": True,
+                "confidence": 90,
+                "sources_agreed": False,
+            }
+        return dict(MANUAL_REVIEW)
+    except Exception:
+        return dict(MANUAL_REVIEW)
+
+
+def _is_unusable(result: dict) -> bool:
+    if not isinstance(result, dict) or not result:
+        return True
+    return result.get("status") in ("pending_manual_review", "oracle_error")
+
+
+def _dual_source(result_a: dict, result_b: dict) -> dict:
+    """Combine two independent oracle results; both must be valid and agree.
+
+    A missing source no longer falls back to single-source payout. Settlement
+    only auto-pays when this returns dual_source_consensus with sources_agreed.
+    """
+    a_bad = _is_unusable(result_a)
+    b_bad = _is_unusable(result_b)
+    if a_bad or b_bad:
+        review = dict(MANUAL_REVIEW)
+        review["reason"] = "missing_independent_source"
+        return review
+    try:
+        conf_a = float(result_a.get("confidence", 0) or 0)
+        conf_b = float(result_b.get("confidence", 0) or 0)
+    except (TypeError, ValueError):
+        review = dict(MANUAL_REVIEW)
+        review["reason"] = "invalid_confidence"
+        return review
+    if _as_bool(result_a.get("occurred")) != _as_bool(result_b.get("occurred")):
+        review = dict(MANUAL_REVIEW)
+        review["reason"] = "sources_disagree"
+        return review
+    combined = dict(result_a)
+    combined["occurred"] = _as_bool(result_a.get("occurred"))
+    combined["confidence"] = int(min(conf_a, conf_b))
+    combined["sources_agreed"] = True
+    combined["status"] = PAYOUT_STATUS_AUTO
+    return _canonicalize_verification(combined)
+
+
+def fetch_evidence(policy) -> dict:
+    """Fetch and verify insurance event evidence from two independent sources.
+
+    Routes to the appropriate oracle pair based on policy type:
+    - storm: Open-Meteo archive + Open-Meteo forecast
+    - flight_delay: Flightradar24/LLM + AviationStack JSON
+    - bankruptcy: Google News/LLM + SEC EDGAR
+
+    Auto-payout requires both sources to be valid and to agree.
     """
     try:
         ptype = policy.get("policy_type")
         params = parse_event_data(ptype, policy.get("event_data") or "{}")
         if ptype == "storm":
-            return _json_safe(_eval_storm(params))
+            coords = _geocode(str(params.get("location", "")))
+            if not coords:
+                return dict(MANUAL_REVIEW)
+            result1 = _eval_storm_coords(
+                params, coords, ORACLE_PREFIX["storm_archive"]
+            )
+            result2 = _eval_storm_coords(
+                params, coords, ORACLE_PREFIX["storm_forecast"]
+            )
+            return _canonicalize_verification(_dual_source(result1, result2))
         if ptype == "flight_delay":
             flight = str(params.get("flight", ""))
             if not FLIGHT_RE.match(flight):
@@ -469,9 +769,20 @@ def fetch_evidence(policy) -> dict:
             if not text:
                 raw = _web_get(url)
                 if _response_status(raw) >= 400:
-                    return dict(MANUAL_REVIEW)
-                text = _response_to_text(raw)
-            return _json_safe(_eval_with_llm(ptype, params, text))
+                    text = ""
+                else:
+                    text = _response_to_text(raw)
+            url2 = (
+                ORACLE_PREFIX["flight_json"]
+                + "?flight_iata="
+                + flight
+                + "&date="
+                + str(params.get("date", ""))
+            )
+            data2 = _safe_json_parse(_web_get(url2))
+            result1 = _eval_with_llm(ptype, params, text)
+            result2 = _eval_flight_from_json(params, data2)
+            return _canonicalize_verification(_dual_source(result1, result2))
         company = str(params.get("company", ""))
         if company not in ALLOWED_COMPANIES:
             return dict(MANUAL_REVIEW)
@@ -479,7 +790,11 @@ def fetch_evidence(policy) -> dict:
         text = _web_render(url)
         if not text:
             text = _response_to_text(_web_get(url))
-        return _json_safe(_eval_with_llm(ptype, params, text))
+        result1 = _eval_with_llm(ptype, params, text)
+        url2 = ORACLE_PREFIX["sec_edgar"] + "%22" + company + "%22+bankruptcy&forms=8-K,15"
+        data2 = _safe_json_parse(_web_get(url2))
+        result2 = _eval_bankruptcy_from_edgar(params, data2)
+        return _canonicalize_verification(_dual_source(result1, result2))
     except Exception:
         return dict(MANUAL_REVIEW)
 
@@ -545,12 +860,22 @@ class ShieldLayer(gl.Contract):
         self.approved_claims = u256(0)
         self.rejected_claims = u256(0)
         self.payout_cursor = u256(0)
-        self.reserve_ratio_bps = u256(int(reserve_ratio_bps or 1000))
+        try:
+            rr = int(reserve_ratio_bps)
+        except Exception:
+            rr = 1000
+        if rr <= 0:
+            rr = 1000
+        self.reserve_ratio_bps = u256(rr)
         self.pending_owner = Address(ZERO_HEX)
         self.owner_proposed_at = u256(0)
         self.paused = False
-        if initial_owner:
-            self.protocol_owner = Address(initial_owner)
+        owner_hex = _addr_hex(initial_owner)
+        if owner_hex != ZERO_HEX:
+            try:
+                self.protocol_owner = Address(owner_hex)
+            except Exception:
+                self.protocol_owner = gl.message.sender_address
         else:
             self.protocol_owner = gl.message.sender_address
         self.active_coverage_by_type["flight_delay"] = u256(0)
@@ -568,7 +893,10 @@ class ShieldLayer(gl.Contract):
         return _hex(gl.message.sender_address)
 
     def _value(self) -> int:
-        return int(gl.message.value or 0)
+        try:
+            return int(gl.message.value or 0)
+        except Exception:
+            return 0
 
     def _live_balance(self) -> int:
         try:
@@ -617,16 +945,17 @@ class ShieldLayer(gl.Contract):
         user_hex = _hex(user_hex)
         delta = sign * int(coverage)
         self.total_active_coverage = u256(self._sat_add(self.total_active_coverage, delta))
-        current_type = int(self.active_coverage_by_type.get(ptype, u256(0)))
+        current_type = int(_map_get(self.active_coverage_by_type, ptype, u256(0)) or 0)
         self.active_coverage_by_type[ptype] = u256(self._sat_add(current_type, delta))
-        current_user = int(self.active_coverage_by_user.get(user_hex, u256(0)))
+        current_user = int(_map_get(self.active_coverage_by_user, user_hex, u256(0)) or 0)
         self.active_coverage_by_user[user_hex] = u256(self._sat_add(current_user, delta))
 
     def _json_id_list(self, store, key: str) -> list:
-        if key not in store:
+        raw = _map_get(store, key, None)
+        if raw is None or raw == "":
             return []
         try:
-            data = json.loads(store[key])
+            data = json.loads(raw) if not isinstance(raw, (list, tuple)) else raw
         except Exception:
             return []
         if not isinstance(data, list):
@@ -656,9 +985,10 @@ class ShieldLayer(gl.Contract):
         amt = int(amount)
         if amt <= 0:
             return False
-        dest = Address(to_hex)
-        if _hex(dest) == ZERO_HEX:
+        dest_hex = _addr_hex(to_hex)
+        if dest_hex == ZERO_HEX:
             return False
+        dest = Address(dest_hex)
         if self._live_balance() < amt:
             return False
         try:
@@ -738,6 +1068,31 @@ class ShieldLayer(gl.Contract):
         self.rejected_claims = u256(int(self.rejected_claims) + 1)
         return claim
 
+    def _unwrap_leader(self, leaders_res):
+        if leaders_res is None:
+            return None
+        if isinstance(leaders_res, Exception):
+            return None
+        try:
+            return_cls = getattr(getattr(gl, "vm", None), "Return", None)
+            if return_cls is not None and isinstance(leaders_res, return_cls):
+                leaders_res = leaders_res.calldata
+        except Exception:
+            pass
+        if hasattr(leaders_res, "calldata") and not isinstance(leaders_res, dict):
+            try:
+                leaders_res = leaders_res.calldata
+            except Exception:
+                return None
+        if isinstance(leaders_res, str):
+            try:
+                leaders_res = json.loads(leaders_res)
+            except Exception:
+                return None
+        if isinstance(leaders_res, dict):
+            return leaders_res
+        return None
+
     def _finalize_verification(self, claim_id):
         cid = _id_key(claim_id)
         claim = json.loads(self.claims[cid])
@@ -749,64 +1104,41 @@ class ShieldLayer(gl.Contract):
         }
 
         def leader_fn():
-            return fetch_evidence(snapshot)
+            return _canonicalize_verification(fetch_evidence(snapshot))
 
         def validator_fn(leaders_res) -> bool:
-            if not isinstance(leaders_res, gl.vm.Return):
-                return False
-            leader = leaders_res.calldata
-            if isinstance(leader, str):
-                try:
-                    leader = json.loads(leader)
-                except Exception:
-                    return False
+            leader = self._unwrap_leader(leaders_res)
             if not isinstance(leader, dict):
                 return False
-            mine = fetch_evidence(snapshot)
-            if leader.get("status") != mine.get("status"):
-                return False
-            if leader.get("status") in ("pending_manual_review", "oracle_error"):
-                return True
-            return _as_bool(leader.get("occurred")) == _as_bool(mine.get("occurred"))
+            mine = _canonicalize_verification(fetch_evidence(snapshot))
+            return _validators_agree(leader, mine)
 
         try:
             verification = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+            verification = self._unwrap_leader(verification) or verification
             if isinstance(verification, str):
                 verification = json.loads(verification)
-            if not isinstance(verification, dict):
-                verification = dict(MANUAL_REVIEW)
         except Exception:
             verification = dict(MANUAL_REVIEW)
 
-        verification = _json_safe(verification)
-        if not isinstance(verification, dict):
-            verification = dict(MANUAL_REVIEW)
-        occurred = _as_bool(verification.get("occurred"))
-        try:
-            confidence = int(verification.get("confidence", 0) or 0)
-        except Exception:
-            confidence = 0
-        if confidence < 0:
-            confidence = 0
-        if confidence > 100:
-            confidence = 100
+        verification = _canonicalize_verification(verification)
+        values = _payout_values(verification)
+        claim["verification_result"] = verification
+        claim["confidence"] = values["confidence"]
+        policy["verification_result"] = verification
 
-        if verification.get("status") in ("pending_manual_review", "oracle_error"):
+        if (
+            values["status"] != PAYOUT_STATUS_AUTO
+            or values["sources_agreed"] is not True
+        ):
             claim["status"] = "pending_manual_review"
-            claim["verification_result"] = verification
             claim["confidence"] = 0
             policy["status"] = "pending_manual_review"
-            policy["verification_result"] = verification
             self.claims[cid] = json.dumps(claim)
             self.policies[pid] = json.dumps(policy)
             return claim
 
-        approved = occurred and confidence >= CONFIDENCE_THRESHOLD
-        claim["verification_result"] = verification
-        claim["confidence"] = confidence
-        policy["verification_result"] = verification
-
-        if approved:
+        if _can_auto_payout(values):
             claim = self._try_payout(policy, claim)
         else:
             claim = self._reject_claim(policy, claim)
@@ -825,6 +1157,20 @@ class ShieldLayer(gl.Contract):
         self.total_premium_pool = u256(int(self.total_premium_pool) + net)
         self._sync_balance_accounting()
 
+    def _load_json_record(self, store, key: str):
+        raw = _map_get(store, key, None)
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, dict):
+            return raw
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return None
+        return None
+
     @gl.public.view
     def get_stats(self) -> dict:
         """Return aggregate protocol statistics.
@@ -835,20 +1181,36 @@ class ShieldLayer(gl.Contract):
             rejected_claims, required_reserve, collateral_bps,
             treasury_balance, paused.
         """
-        return {
-            "total_policies": int(self.total_policies),
-            "total_claims": int(self.total_claims),
-            "premium_pool": int(self.premium_pool),
-            "total_premium_pool": int(self.total_premium_pool),
-            "total_active_coverage": int(self.total_active_coverage),
-            "contract_balance": int(self.contract_balance),
-            "approved_claims": int(self.approved_claims),
-            "rejected_claims": int(self.rejected_claims),
-            "required_reserve": self._required_reserve(),
-            "collateral_bps": self._collateral_ratio_bps(),
-            "treasury_balance": int(self.treasury_balance),
-            "paused": bool(self.paused),
-        }
+        try:
+            return _view_safe({
+                "total_policies": int(self.total_policies),
+                "total_claims": int(self.total_claims),
+                "premium_pool": int(self.premium_pool),
+                "total_premium_pool": int(self.total_premium_pool),
+                "total_active_coverage": int(self.total_active_coverage),
+                "contract_balance": int(self.contract_balance),
+                "approved_claims": int(self.approved_claims),
+                "rejected_claims": int(self.rejected_claims),
+                "required_reserve": self._required_reserve(),
+                "collateral_bps": self._collateral_ratio_bps(),
+                "treasury_balance": int(self.treasury_balance),
+                "paused": bool(self.paused),
+            })
+        except Exception:
+            return {
+                "total_policies": 0,
+                "total_claims": 0,
+                "premium_pool": 0,
+                "total_premium_pool": 0,
+                "total_active_coverage": 0,
+                "contract_balance": 0,
+                "approved_claims": 0,
+                "rejected_claims": 0,
+                "required_reserve": SAFETY_RESERVE_FLAT,
+                "collateral_bps": 10000000,
+                "treasury_balance": 0,
+                "paused": False,
+            }
 
     @gl.public.view
     def get_premium_bps(self) -> dict:
@@ -864,25 +1226,44 @@ class ShieldLayer(gl.Contract):
 
     @gl.public.view
     def get_owner(self) -> dict:
-        return {
-            "owner": _hex(self.protocol_owner),
-            "pending_owner": _hex(self.pending_owner),
-            "owner_proposed_at": int(self.owner_proposed_at),
-            "paused": bool(self.paused),
-        }
+        try:
+            return _view_safe({
+                "owner": _hex(self.protocol_owner),
+                "pending_owner": _hex(self.pending_owner),
+                "owner_proposed_at": int(self.owner_proposed_at),
+                "paused": bool(self.paused),
+            })
+        except Exception:
+            return {
+                "owner": ZERO_HEX,
+                "pending_owner": ZERO_HEX,
+                "owner_proposed_at": 0,
+                "paused": False,
+            }
 
     @gl.public.view
     def get_reserve(self) -> dict:
-        req = self._required_reserve()
-        return {
-            "required_reserve": req,
-            "premium_pool": int(self.premium_pool),
-            "contract_balance": int(self.contract_balance),
-            "withdrawable": max(0, int(self.premium_pool) - req),
-            "collateral_bps": self._collateral_ratio_bps(),
-            "outstanding": self._outstanding_coverage(),
-            "treasury_balance": int(self.treasury_balance),
-        }
+        try:
+            req = self._required_reserve()
+            return _view_safe({
+                "required_reserve": req,
+                "premium_pool": int(self.premium_pool),
+                "contract_balance": int(self.contract_balance),
+                "withdrawable": max(0, int(self.premium_pool) - req),
+                "collateral_bps": self._collateral_ratio_bps(),
+                "outstanding": self._outstanding_coverage(),
+                "treasury_balance": int(self.treasury_balance),
+            })
+        except Exception:
+            return {
+                "required_reserve": SAFETY_RESERVE_FLAT,
+                "premium_pool": 0,
+                "contract_balance": 0,
+                "withdrawable": 0,
+                "collateral_bps": 10000000,
+                "outstanding": 0,
+                "treasury_balance": 0,
+            }
 
     @gl.public.view
     def get_policy(self, policy_id: int) -> dict:
@@ -894,10 +1275,15 @@ class ShieldLayer(gl.Contract):
         Returns:
             dict with all policy fields, or {"error": "not_found"}.
         """
-        key = _id_key(policy_id)
-        if key not in self.policies:
-            return {"error": "not_found", "policy_id": int(policy_id)}
-        return json.loads(self.policies[key])
+        try:
+            pid = _safe_int(policy_id, 0)
+            key = _id_key(pid)
+            data = self._load_json_record(self.policies, key)
+            if not data:
+                return {"error": "not_found", "policy_id": pid}
+            return _view_safe(data)
+        except Exception:
+            return {"error": "not_found", "policy_id": _safe_int(policy_id, 0)}
 
     @gl.public.view
     def get_policies(self, user: str) -> list:
@@ -909,26 +1295,37 @@ class ShieldLayer(gl.Contract):
         Returns:
             List of policy dicts (may be empty).
         """
-        key = _hex(Address(user))
-        result = []
-        for pid in self._json_id_list(self.user_policies, key):
-            result.append(self.get_policy(int(pid)))
-        return result
+        try:
+            key = _addr_hex(user)
+            result = []
+            for pid in self._json_id_list(self.user_policies, key):
+                result.append(self.get_policy(int(pid)))
+            return _view_safe(result)
+        except Exception:
+            return []
 
     @gl.public.view
     def get_claim(self, claim_id: int) -> dict:
-        key = _id_key(claim_id)
-        if key not in self.claims:
-            return {"error": "not_found", "claim_id": int(claim_id)}
-        return json.loads(self.claims[key])
+        try:
+            cid = _safe_int(claim_id, 0)
+            key = _id_key(cid)
+            data = self._load_json_record(self.claims, key)
+            if not data:
+                return {"error": "not_found", "claim_id": cid}
+            return _view_safe(data)
+        except Exception:
+            return {"error": "not_found", "claim_id": _safe_int(claim_id, 0)}
 
     @gl.public.view
     def get_claims_by_user(self, user: str) -> list:
-        key = _hex(Address(user))
-        result = []
-        for cid in self._json_id_list(self.user_claims, key):
-            result.append(self.get_claim(int(cid)))
-        return result
+        try:
+            key = _addr_hex(user)
+            result = []
+            for cid in self._json_id_list(self.user_claims, key):
+                result.append(self.get_claim(int(cid)))
+            return _view_safe(result)
+        except Exception:
+            return []
 
     @gl.public.view
     def check_claim_status(self, claim_id: int) -> dict:
@@ -940,23 +1337,37 @@ class ShieldLayer(gl.Contract):
         Returns:
             dict with claim_id, status, payout, payout_tx, confidence.
         """
-        claim = self.get_claim(claim_id)
-        if claim.get("error") == "not_found":
-            return claim
-        return {
-            "claim_id": claim.get("claim_id"),
-            "status": claim.get("status"),
-            "payout": claim.get("payout", 0),
-            "payout_tx": claim.get("payout_tx"),
-            "confidence": claim.get("confidence", 0),
-        }
+        try:
+            claim = self.get_claim(claim_id)
+            if claim.get("error") == "not_found":
+                return claim
+            payout_tx = claim.get("payout_tx", "")
+            if payout_tx is None:
+                payout_tx = ""
+            return _view_safe({
+                "claim_id": claim.get("claim_id", _safe_int(claim_id, 0)),
+                "status": claim.get("status", ""),
+                "payout": _safe_int(claim.get("payout", 0), 0),
+                "payout_tx": payout_tx,
+                "confidence": _safe_int(claim.get("confidence", 0), 0),
+            })
+        except Exception:
+            return {
+                "error": "not_found",
+                "claim_id": _safe_int(claim_id, 0),
+            }
 
     @gl.public.view
     def get_admin_op(self, op_id: int) -> dict:
-        key = _id_key(op_id)
-        if key not in self.admin_ops:
-            return {"error": "not_found", "op_id": int(op_id)}
-        return json.loads(self.admin_ops[key])
+        try:
+            oid = _safe_int(op_id, 0)
+            key = _id_key(oid)
+            data = self._load_json_record(self.admin_ops, key)
+            if not data:
+                return {"error": "not_found", "op_id": oid}
+            return _view_safe(data)
+        except Exception:
+            return {"error": "not_found", "op_id": _safe_int(op_id, 0)}
 
     @gl.public.write
     def pause_contract(self):
@@ -1004,9 +1415,8 @@ class ShieldLayer(gl.Contract):
         if coverage <= 0:
             _err("invalid_coverage")
 
-        event_ts = _event_start_ts(params["date"])
-        if event_ts + CLAIM_WINDOW_SECONDS <= _now():
-            _err("event_window_closed")
+        if _event_already_started(params["date"]):
+            _err("event_already_started")
 
         sender_addr = self._sender()
         sender = _hex(sender_addr)
@@ -1017,14 +1427,16 @@ class ShieldLayer(gl.Contract):
 
         excess = paid - premium
         pool_for_cap = self._live_balance() - excess
+        if pool_for_cap < 0:
+            pool_for_cap = 0
         if coverage * 10000 > pool_for_cap * POLICY_CAP_BPS:
             _err("policy_cap_exceeded")
 
-        type_used = int(self.active_coverage_by_type.get(policy_type, u256(0)))
+        type_used = int(_map_get(self.active_coverage_by_type, policy_type, u256(0)) or 0)
         if (type_used + coverage) * 10000 > pool_for_cap * TYPE_CAP_BPS:
             _err("type_cap_exceeded")
 
-        user_used = int(self.active_coverage_by_user.get(sender, u256(0)))
+        user_used = int(_map_get(self.active_coverage_by_user, sender, u256(0)) or 0)
         if (user_used + coverage) * 10000 > pool_for_cap * USER_CAP_BPS:
             _err("user_cap_exceeded")
 
@@ -1047,8 +1459,8 @@ class ShieldLayer(gl.Contract):
             "premium_paid": paid,
             "event_data": json.dumps(params, separators=(",", ":"), sort_keys=True),
             "status": "active",
-            "claim_id": None,
-            "verification_result": None,
+            "claim_id": 0,
+            "verification_result": "",
             "created_at": _now(),
         }
         self.policies[_id_key(pid)] = json.dumps(record)
@@ -1077,15 +1489,16 @@ class ShieldLayer(gl.Contract):
         sender_addr = self._sender()
         sender = _hex(sender_addr)
         key = _id_key(policy_id)
-        if key not in self.policies:
+        policy = self._load_json_record(self.policies, key)
+        if not policy:
             _err("policy_not_found")
-        policy = json.loads(self.policies[key])
         if _hex(policy.get("beneficiary")) != sender:
             _err("not_policy_owner")
+        existing_claim = policy.get("claim_id")
+        if existing_claim not in (None, 0, "", "0"):
+            _err("duplicate_claim")
         if policy.get("status") != "active":
             _err("inactive_policy")
-        if policy.get("claim_id") is not None:
-            _err("duplicate_claim")
 
         params = parse_event_data(
             policy.get("policy_type"), policy.get("event_data") or "{}"
@@ -1107,8 +1520,8 @@ class ShieldLayer(gl.Contract):
             "claimant": sender,
             "status": "pending_verification",
             "payout": 0,
-            "payout_tx": None,
-            "verification_result": None,
+            "payout_tx": "",
+            "verification_result": "",
             "confidence": 0,
         }
         policy["claim_id"] = cid
@@ -1139,11 +1552,13 @@ class ShieldLayer(gl.Contract):
         """
         self._require_not_paused()
         key = _id_key(claim_id)
-        if key not in self.claims:
+        claim = self._load_json_record(self.claims, key)
+        if not claim:
             _err("claim_not_found")
-        claim = json.loads(self.claims[key])
         pid = _id_key(claim["policy_id"])
-        policy = json.loads(self.policies[pid])
+        policy = self._load_json_record(self.policies, pid)
+        if not policy:
+            _err("policy_not_found")
         sender = self._sender_hex()
         if sender != _hex(claim.get("claimant")) and not self._is_owner():
             _err("not_authorized")
@@ -1161,9 +1576,9 @@ class ShieldLayer(gl.Contract):
     @gl.public.write
     def expire_policy(self, policy_id: int) -> dict:
         key = _id_key(policy_id)
-        if key not in self.policies:
+        policy = self._load_json_record(self.policies, key)
+        if not policy:
             _err("policy_not_found")
-        policy = json.loads(self.policies[key])
         if policy.get("status") != "active":
             _err("inactive_policy")
         params = parse_event_data(
@@ -1205,14 +1620,15 @@ class ShieldLayer(gl.Contract):
     @gl.public.write
     def propose_owner(self, new_owner: str) -> str:
         self._require_owner()
-        pending = Address(new_owner)
-        if _hex(pending) == ZERO_HEX:
+        owner_hex = _addr_hex(new_owner)
+        if owner_hex == ZERO_HEX:
             _err("invalid_owner")
-        if _hex(pending) == _hex(self.protocol_owner):
+        pending = Address(owner_hex)
+        if owner_hex == _hex(self.protocol_owner):
             _err("already_owner")
         self.pending_owner = pending
         self.owner_proposed_at = u256(_now())
-        return _hex(pending)
+        return owner_hex
 
     @gl.public.write
     def cancel_owner_proposal(self) -> str:
@@ -1270,9 +1686,9 @@ class ShieldLayer(gl.Contract):
     def cancel_admin(self, op_id: int) -> int:
         self._require_owner()
         key = _id_key(op_id)
-        if key not in self.admin_ops:
+        op = self._load_json_record(self.admin_ops, key)
+        if not op:
             _err("admin_op_not_found")
-        op = json.loads(self.admin_ops[key])
         if op.get("status") != "scheduled":
             _err("admin_op_not_scheduled")
         op["status"] = "cancelled"
@@ -1283,9 +1699,9 @@ class ShieldLayer(gl.Contract):
     def execute_admin(self, op_id: int) -> dict:
         self._require_owner()
         key = _id_key(op_id)
-        if key not in self.admin_ops:
+        op = self._load_json_record(self.admin_ops, key)
+        if not op:
             _err("admin_op_not_found")
-        op = json.loads(self.admin_ops[key])
         if op.get("status") != "scheduled":
             _err("admin_op_not_scheduled")
         if _now() < _safe_int(op.get("eta", 0), 0):
@@ -1337,13 +1753,15 @@ class ShieldLayer(gl.Contract):
         elif action == "retry_payout":
             cid = _safe_int(payload, -1)
             ckey = _id_key(cid)
-            if ckey not in self.claims:
+            claim = self._load_json_record(self.claims, ckey)
+            if not claim:
                 _err("claim_not_found")
-            claim = json.loads(self.claims[ckey])
             if claim.get("status") != "payout_failed":
                 _err("not_payout_failed")
             pid = _id_key(claim["policy_id"])
-            policy = json.loads(self.policies[pid])
+            policy = self._load_json_record(self.policies, pid)
+            if not policy:
+                _err("policy_not_found")
             claim = self._try_payout(policy, claim)
             self.claims[ckey] = json.dumps(claim)
             self.policies[pid] = json.dumps(policy)
@@ -1356,9 +1774,9 @@ class ShieldLayer(gl.Contract):
                 _err("invalid_payload")
             cid = _safe_int(data.get("claim_id"), -1)
             ckey = _id_key(cid)
-            if ckey not in self.claims:
+            claim = self._load_json_record(self.claims, ckey)
+            if not claim:
                 _err("claim_not_found")
-            claim = json.loads(self.claims[ckey])
             if claim.get("status") not in (
                 "pending_manual_review",
                 "pending_funding",
@@ -1366,7 +1784,9 @@ class ShieldLayer(gl.Contract):
             ):
                 _err("not_resolvable")
             pid = _id_key(claim["policy_id"])
-            policy = json.loads(self.policies[pid])
+            policy = self._load_json_record(self.policies, pid)
+            if not policy:
+                _err("policy_not_found")
             if _as_bool(data.get("approve")):
                 claim["verification_result"] = {
                     "status": "manual_override",
